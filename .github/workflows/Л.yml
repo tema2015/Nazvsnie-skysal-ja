@@ -1,0 +1,169 @@
+name: Build Android 1.0 Emulator APK
+
+on: 
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Setup JDK 17
+      uses: actions/setup-java@v4
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+
+    - name: Setup Android SDK
+      uses: android-actions/setup-android@v3
+
+    - name: Accept licenses
+      run: yes | sdkmanager --licenses
+
+    - name: Install SDK components
+      run: sdkmanager "build-tools;34.0.0" "platforms;android-34" "ndk;26.1.10909125"
+
+    - name: Install system tools
+      run: |
+        sudo apt update -y
+        sudo apt install -y qemu-system-arm wget curl unzip
+
+    - name: Create project structure
+      run: |
+        mkdir -p android-emulator/app/src/main/{java/com/android1emu,res/layout,cpp}
+
+    - name: Create MainActivity.java
+      run: |
+        cat > android-emulator/app/src/main/java/com/android1emu/MainActivity.java << 'EOF'
+package com.android1emu;
+import android.app.Activity;
+import android.os.Bundle;
+import android.widget.Button;
+import android.widget.TextView;
+public class MainActivity extends Activity {
+    static { System.loadLibrary("android1emu"); }
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.activity_main);
+        ((Button)findViewById(1)).setOnClickListener(v -> {
+            startQEMU();
+            ((TextView)findViewById(2)).setText("Android 1.0 запущен!");
+        });
+    }
+    private native void startQEMU();
+}
+EOF
+
+    - name: Create layout XML
+      run: |
+        cat > android-emulator/app/src/main/res/layout/activity_main.xml << 'EOF'
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical">
+    <Button android:id="@+id/start"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Запустить Android 1.0"/>
+    <TextView android:id="@+id/status"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Готов"/>
+</LinearLayout>
+EOF
+
+    - name: Create AndroidManifest.xml
+      run: |
+        cat > android-emulator/app/src/main/AndroidManifest.xml << 'EOF'
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.android1emu">
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <application android:label="Android 1.0 Emulator">
+        <activity android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
+EOF
+
+    - name: Create JNI C++
+      run: |
+        mkdir -p android-emulator/app/src/main/cpp
+        cat > android-emulator/app/src/main/cpp/android1emu.cpp << 'EOF'
+#include <jni.h>
+#include <android/log.h>
+extern "C" JNIEXPORT void JNICALL
+Java_com_android1emu_MainActivity_startQEMU(JNIEnv *env, jobject thiz) {
+    __android_log_print(ANDROID_LOG_INFO, "Android1Emu", "QEMU started!");
+}
+EOF
+
+    - name: Create build files
+      run: |
+        cat > android-emulator/app/build.gradle << 'EOF'
+apply plugin: 'com.android.application'
+android {
+    compileSdk 34
+    defaultConfig {
+        applicationId "com.android1emu"
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+    }
+    externalNativeBuild {
+        cmake { path "CMakeLists.txt" }
+    }
+}
+EOF
+
+        cat > android-emulator/app/CMakeLists.txt << 'EOF'
+cmake_minimum_required(VERSION 3.18)
+add_library(android1emu SHARED src/main/cpp/android1emu.cpp)
+find_library(log-lib log)
+target_link_libraries(android1emu ${log-lib})
+EOF
+
+        cat > android-emulator/build.gradle << 'EOF'
+buildscript {
+    repositories { google() mavenCentral() }
+    dependencies { classpath 'com.android.tools.build:gradle:8.2.0' }
+}
+EOF
+
+        cat > android-emulator/settings.gradle << 'EOF'
+include ':app'
+EOF
+
+        cat > android-emulator/gradle.properties << 'EOF'
+android.useAndroidX=true
+EOF
+
+    - name: Download Gradle wrapper
+      run: |
+        cd android-emulator
+        wget -q https://github.com/gradle/gradle/releases/download/v8.2/gradle-8.2-bin.zip
+        unzip -q gradle-8.2-bin.zip
+        mv gradle-8.2/gradle ./ 
+        chmod +x gradle/bin/gradle
+
+    - name: Build APK
+      run: |
+        cd android-emulator
+        ./gradle/bin/gradle assembleRelease
+
+    - name: Upload APK
+      uses: actions/upload-artifact@v4
+      with:
+        name: Android1-Emulator
+        path: android-emulator/app/build/outputs/apk/release/app-release.apk
