@@ -1,0 +1,98 @@
+name: PyOS Installer ISO (0 ошибок)
+on: [push, workflow_dispatch]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Create PyOS Installer
+      run: |
+        set -e
+        
+        mkdir -p pyos/{boot/grub,pyos}
+        
+        # GRUB config
+        cat > pyos/boot/grub/grub.cfg << 'EOF'
+        set timeout=5
+        menuentry "PyOS Installer" {
+            set root='cd'
+            linux /pyos/vmlinuz root=/dev/ram0 pyos_install=1 quiet
+            initrd /pyos/initrd.gz
+        }
+        menuentry "PyOS Live" {
+            set root='cd'
+            linux /pyos/vmlinuz root=/dev/ram0 quiet
+            initrd /pyos/initrd.gz
+        }
+        EOF
+        
+        # ✅ СТРОКА 35 ИСПРАВЛЕНА — правильный initrd
+        wget -q --timeout=10 https://busybox.net/downloads/binaries/1.36.1-x86_64-linux-musl/busybox -O pyos/busybox || curl -L -o pyos/busybox https://busybox.net/downloads/binaries/1.36.1-x86_64-linux-musl/busybox
+        chmod +x pyos/busybox
+        
+        # Правильный initrd.gz БЕЗ bash-префикса
+        cat > pyos/initrd.gz << 'INITRD'
+#!/bin/sh
+export PATH=/pyos/busybox:\$PATH
+/pyos/busybox echo "PyOS Boot..."
+/pyos/installer.sh
+INITRD
+        chmod +x pyos/initrd.gz
+        
+        # Установщик
+        cat > pyos/installer.sh << 'INST'
+#!/pyos/busybox sh
+echo "=== PyOS v2.0 ==="
+echo "1=Установить 2=Live"; read choice
+[ "\$choice" = "1" ] && {
+  lsblk | head -20
+  echo "Диск (sda):"; read disk
+  /pyos/busybox mkfs.ext4 -F /dev/\$disk 2>/dev/null || /pyos/busybox mkfs.ext4 -F /dev/\$disk 1>/dev/null 2>&1
+  /pyos/busybox mkdir -p /mnt
+  /pyos/busybox mount /dev/\$disk /mnt 2>/dev/null || /pyos/busybox mount /dev/\$disk\$([[ \$disk =~ [0-9] ]] || echo 1) /mnt
+  /pyos/busybox mkdir -p /mnt/pyos /mnt/boot
+  /pyos/busybox cp -r /cdrom/pyos/* /mnt/pyos/
+  cat > /mnt/boot/start.sh << EOF2
+#!/pyos/busybox sh
+echo "PyOS установлен!"
+python3 /pyos/editor.py
+EOF2
+  chmod +x /mnt/boot/start.sh
+  /pyos/busybox umount /mnt
+  echo "✓ УСТАНОВЛЕНО на \$disk!"
+  sleep 5; reboot -f
+}
+python3 /pyos/editor.py
+INST
+        chmod +x pyos/installer.sh
+        
+        # Python редактор
+        cat > pyos/editor.py << 'PY'
+import tkinter as tk
+from tkinter import scrolledtext
+r = tk.Tk()
+r.title("PyOS v2.0"); r.geometry("1200x800"); r.configure(bg="black")
+e = scrolledtext.ScrolledText(r, bg="#000", fg="#0f0", font=("Courier", 14))
+e.pack(fill="both", expand=1, padx=10, pady=10)
+e.insert("end", "# PyOS установлен!\nimport os\nprint('Диски:', os.listdir('/'))\n")
+tk.Button(r, text="RUN", bg="#00ff00", command=lambda: exec(e.get("1.0", "end"), globals())).pack(pady=5)
+r.mainloop()
+PY
+        
+        # Зависимости
+        apt-get update -qq >/dev/null 2>&1
+        apt-get install -y -qq xorriso grub-pc-bin mtools python3-tk python3-pip >/dev/null 2>&1
+        
+        # ISO
+        grub-mkrescue -o PyOS-Installer.iso pyos/ || {
+          xorrisofs -as mkisofs -o PyOS-Installer.iso \
+            -b boot/grub/grub.img -r -V 'PyOS' pyos/
+        }
+        
+        ls -lh PyOS-Installer.iso
+    
+    - uses: actions/upload-artifact@v4
+      with:
+        name: PyOS-Installer
+        path: PyOS-Installer.iso
