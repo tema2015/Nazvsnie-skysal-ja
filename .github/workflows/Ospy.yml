@@ -1,0 +1,80 @@
+name: PyOS Installer ISO (устанавливает на диск)
+on: [push, workflow_dispatch]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Create PyOS Installer ISO
+      run: |
+        mkdir -p pyos-installer/{isolinux,pyos,install}
+        
+        # isolinux.cfg (установщик)
+        cat > pyos-installer/isolinux/isolinux.cfg << 'EOF'
+        DEFAULT pyos-install
+        LABEL pyos-install
+        KERNEL pyos/vmlinuz
+        APPEND initrd=pyos/initrd.gz install quiet
+        EOF
+        
+        # Установочный скрипт
+        cat > pyos-installer/install/install.sh << 'EOF'
+        #!/bin/bash
+        echo "=== PyOS Installer v2.0 ==="
+        echo "Выберите диск для установки (/dev/sda):"
+        lsblk
+        read -p "Диск (например sda): " DISK
+        
+        # Форматируем + копируем PyOS
+        mkfs.ext4 /dev/${DISK}1
+        mount /dev/${DISK}1 /mnt
+        
+        # Создаём PyOS систему
+        mkdir -p /mnt/{bin,lib,pyos}
+        cp /cdrom/pyos/* /mnt/pyos/
+        
+        # GRUB bootloader
+        cat > /mnt/boot/grub/grub.cfg << 'GRUB'
+        menuentry "PyOS v2.0" {
+            linux /pyos/vmlinuz root=/dev/sda1
+            initrd /pyos/initrd.gz
+        }
+        GRUB
+        
+        umount /mnt
+        echo "✓ PyOS установлен на /dev/${DISK}! Перезагрузитесь."
+        read -p "Нажмите Enter для выхода..."
+        reboot
+        EOF
+        
+        chmod +x pyos-installer/install/install.sh
+        
+        # PyOS файлы (kernel + сама ОС)
+        mkdir -p pyos-installer/pyos
+        cat > pyos-installer/pyos/pyos.py << 'EOF'
+#!/usr/bin/env python3
+import os, tkinter as tk
+from tkinter import scrolledtext, messagebox
+class PyOS:
+    def __init__(self):
+        self.root = tk.Tk(); self.root.title("PyOS v2.0 INSTALLED")
+        self.editor = scrolledtext.ScrolledText(self.root, bg="#000", fg="#0f0")
+        self.editor.pack(fill=tk.BOTH, expand=1)
+        self.editor.insert(tk.END, "# PyOS установлен!\\nimport os\\nprint('Диски:', os.listdir('/'))\\n")
+        tk.Button(self.root, text="▶ RUN", command=lambda: exec(self.editor.get("1.0", tk.END))).pack()
+    def run(self): self.root.mainloop()
+PyOS().run()
+EOF
+        
+        # Создаём ISO
+        apt-get update && apt-get install -y syslinux genisoimage
+        mkisofs -o PyOS-Installer.iso \
+          -b isolinux/isolinux.bin -c isolinux/boot.cat \
+          -no-emul-boot -boot-load-size 4 -boot-info-table \
+          -r -J -l pyos-installer/
+    
+    - uses: actions/upload-artifact@v4
+      with:
+        name: PyOS-Installer
+        path: PyOS-Installer.iso
